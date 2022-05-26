@@ -12,14 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from paddle import nn
+from torch import nn
 
-from ppocr.modeling.backbones.det_mobilenet_v3 import ResidualUnit, ConvBNLayer, make_divisible
+from ocr.modeling.backbones.det_mobilenet_v3 import ResidualUnit, ConvBNLayer, make_divisible
 
 __all__ = ['MobileNetV3']
 
 
-class MobileNetV3(nn.Layer):
+class MobileNetV3(nn.Module):
     def __init__(self,
                  in_channels=3,
                  model_name='small',
@@ -127,7 +127,7 @@ class MobileNetV3(nn.Layer):
             if_act=True,
             act='hardswish')
 
-        self.pool = nn.MaxPool2D(kernel_size=2, stride=2, padding=0)
+        self.pool = nn.MaxPool2d(kernel_size=2, stride=2, padding=0)
         self.out_channels = make_divisible(scale * cls_ch_squeeze)
 
     def forward(self, x):

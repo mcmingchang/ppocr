@@ -16,10 +16,9 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-import paddle
-from paddle import nn
-import paddle.nn.functional as F
-from paddle import ParamAttr
+import torch
+from torch import nn
+import torch.nn.functional as F
 
 __all__ = ['MobileNetV3']
 
@@ -33,7 +32,7 @@ def make_divisible(v, divisor=8, min_value=None):
     return new_v
 
 
-class MobileNetV3(nn.Layer):
+class MobileNetV3(nn.Module):
     def __init__(self,
                  in_channels=3,
                  model_name='large',
@@ -151,7 +150,7 @@ class MobileNetV3(nn.Layer):
         return out_list
 
 
-class ConvBNLayer(nn.Layer):
+class ConvBNLayer(nn.Module):
     def __init__(self,
                  in_channels,
                  out_channels,
@@ -164,16 +163,15 @@ class ConvBNLayer(nn.Layer):
         super(ConvBNLayer, self).__init__()
         self.if_act = if_act
         self.act = act
-        self.conv = nn.Conv2D(
+        self.conv = nn.Conv2d(
             in_channels=in_channels,
             out_channels=out_channels,
             kernel_size=kernel_size,
             stride=stride,
             padding=padding,
-            groups=groups,
-            bias_attr=False)
+            groups=groups)
 
-        self.bn = nn.BatchNorm(num_channels=out_channels, act=None)
+        self.bn = nn.BatchNorm2d(out_channels)
 
     def forward(self, x):
         x = self.conv(x)
@@ -190,7 +188,7 @@ class ConvBNLayer(nn.Layer):
         return x
 
 
-class ResidualUnit(nn.Layer):
+class ResidualUnit(nn.Module):
     def __init__(self,
                  in_channels,
                  mid_channels,
@@ -238,25 +236,23 @@ class ResidualUnit(nn.Layer):
             x = self.mid_se(x)
         x = self.linear_conv(x)
         if self.if_shortcut:
-            x = paddle.add(inputs, x)
+            x = torch.add(inputs, x)
         return x
 
 
-class SEModule(nn.Layer):
+class SEModule(nn.Module):
     def __init__(self, in_channels, reduction=4):
         super(SEModule, self).__init__()
-        self.avg_pool = nn.AdaptiveAvgPool2D(1)
-        self.conv1 = nn.Conv2D(
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.conv1 = nn.Conv2d(
             in_channels=in_channels,
             out_channels=in_channels // reduction,
             kernel_size=1,
-            stride=1,
             padding=0)
-        self.conv2 = nn.Conv2D(
+        self.conv2 = nn.Conv2d(
             in_channels=in_channels // reduction,
             out_channels=in_channels,
             kernel_size=1,
-            stride=1,
             padding=0)
 
     def forward(self, inputs):
@@ -264,5 +260,5 @@ class SEModule(nn.Layer):
         outputs = self.conv1(outputs)
         outputs = F.relu(outputs)
         outputs = self.conv2(outputs)
-        outputs = F.hardsigmoid(outputs, slope=0.2, offset=0.5)
+        outputs = F.hardsigmoid(outputs, inplace=True)
         return inputs * outputs

@@ -18,35 +18,35 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-import paddle
-import paddle.nn as nn
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 
 
-class ACELoss(nn.Layer):
+class ACELoss(nn.Module):
     def __init__(self, **kwargs):
         super().__init__()
         self.loss_func = nn.CrossEntropyLoss(
             weight=None,
             ignore_index=0,
             reduction='none',
-            soft_label=True,
-            axis=-1)
+            label_smoothing=0.1)
 
     def __call__(self, predicts, batch):
         if isinstance(predicts, (list, tuple)):
             predicts = predicts[-1]
 
         B, N = predicts.shape[:2]
-        div = paddle.to_tensor([N]).astype('float32')
+        div = torch.tensor([N]).float()
 
-        predicts = nn.functional.softmax(predicts, axis=-1)
-        aggregation_preds = paddle.sum(predicts, axis=1)
-        aggregation_preds = paddle.divide(aggregation_preds, div)
+        predicts = F.softmax(predicts, dim=-1)
+        aggregation_preds = torch.sum(predicts, dim=1)
+        aggregation_preds = torch.divide(aggregation_preds, div)
 
-        length = batch[2].astype("float32")
-        batch = batch[3].astype("float32")
-        batch[:, 0] = paddle.subtract(div, length)
-        batch = paddle.divide(batch, div)
+        length = batch[2].float()
+        batch = batch[3].float()
+        batch[:, 0] = torch.subtract(div, length)
+        batch = torch.divide(batch, div)
 
         loss = self.loss_func(aggregation_preds, batch)
         return {"loss_ace": loss}
