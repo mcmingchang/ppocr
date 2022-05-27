@@ -17,22 +17,12 @@ from __future__ import division
 from __future__ import print_function
 
 import math
-
-import paddle
-from paddle import ParamAttr, nn
-from paddle.nn import functional as F
-
-
-def get_para_bias_attr(l2_decay, k):
-    regularizer = paddle.regularizer.L2Decay(l2_decay)
-    stdv = 1.0 / math.sqrt(k * 1.0)
-    initializer = nn.initializer.Uniform(-stdv, stdv)
-    weight_attr = ParamAttr(regularizer=regularizer, initializer=initializer)
-    bias_attr = ParamAttr(regularizer=regularizer, initializer=initializer)
-    return [weight_attr, bias_attr]
+import torch
+from torch import nn
+from torch.nn import functional as F
 
 
-class CTCHead(nn.Layer):
+class CTCHead(nn.Module):
     def __init__(self,
                  in_channels,
                  out_channels,
@@ -42,29 +32,20 @@ class CTCHead(nn.Layer):
                  **kwargs):
         super(CTCHead, self).__init__()
         if mid_channels is None:
-            weight_attr, bias_attr = get_para_bias_attr(
-                l2_decay=fc_decay, k=in_channels)
             self.fc = nn.Linear(
                 in_channels,
                 out_channels,
-                weight_attr=weight_attr,
-                bias_attr=bias_attr)
+                bias=True)
         else:
-            weight_attr1, bias_attr1 = get_para_bias_attr(
-                l2_decay=fc_decay, k=in_channels)
             self.fc1 = nn.Linear(
                 in_channels,
                 mid_channels,
-                weight_attr=weight_attr1,
-                bias_attr=bias_attr1)
+                bias=True)
 
-            weight_attr2, bias_attr2 = get_para_bias_attr(
-                l2_decay=fc_decay, k=mid_channels)
             self.fc2 = nn.Linear(
                 mid_channels,
                 out_channels,
-                weight_attr=weight_attr2,
-                bias_attr=bias_attr2)
+                bias=True)
         self.out_channels = out_channels
         self.mid_channels = mid_channels
         self.return_feats = return_feats
@@ -81,7 +62,7 @@ class CTCHead(nn.Layer):
         else:
             result = predicts
         if not self.training:
-            predicts = F.softmax(predicts, axis=2)
+            predicts = F.softmax(predicts, dim=2)
             result = predicts
 
         return result

@@ -1,28 +1,8 @@
-# copyright (c) 2022 PaddlePaddle Authors. All Rights Reserve.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#    http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
-from paddle import ParamAttr
-from paddle.nn.initializer import KaimingNormal
 import numpy as np
-import paddle
-import paddle.nn as nn
-from paddle.nn.initializer import TruncatedNormal, Constant, Normal
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 
-trunc_normal_ = TruncatedNormal(std=.02)
-normal_ = Normal
-zeros_ = Constant(value=0.)
-ones_ = Constant(value=1.)
 
 
 def drop_path(x, drop_prob=0., training=False):
@@ -32,15 +12,15 @@ def drop_path(x, drop_prob=0., training=False):
     """
     if drop_prob == 0. or not training:
         return x
-    keep_prob = paddle.to_tensor(1 - drop_prob)
-    shape = (paddle.shape(x)[0], ) + (1, ) * (x.ndim - 1)
-    random_tensor = keep_prob + paddle.rand(shape, dtype=x.dtype)
-    random_tensor = paddle.floor(random_tensor)  # binarize
+    keep_prob = torch.tensor(1 - drop_prob)
+    shape = (x.shape[0], ) + (1, ) * (x.ndim - 1)
+    random_tensor = keep_prob + torch.rand(shape, dtype=x.dtype)
+    random_tensor = torch.floor(random_tensor)  # binarize
     output = x.divide(keep_prob) * random_tensor
     return output
 
 
-class ConvBNLayer(nn.Layer):
+class ConvBNLayer(nn.Module):
     def __init__(self,
                  in_channels,
                  out_channels,
@@ -51,17 +31,15 @@ class ConvBNLayer(nn.Layer):
                  groups=1,
                  act=nn.GELU):
         super().__init__()
-        self.conv = nn.Conv2D(
+        self.conv = nn.Conv2d(
             in_channels=in_channels,
             out_channels=out_channels,
             kernel_size=kernel_size,
             stride=stride,
             padding=padding,
             groups=groups,
-            weight_attr=paddle.ParamAttr(
-                initializer=nn.initializer.KaimingUniform()),
-            bias_attr=bias_attr)
-        self.norm = nn.BatchNorm2D(out_channels)
+            bias=bias_attr)
+        self.norm = nn.BatchNorm2d(out_channels)
         self.act = act()
 
     def forward(self, inputs):
@@ -71,7 +49,7 @@ class ConvBNLayer(nn.Layer):
         return out
 
 
-class DropPath(nn.Layer):
+class DropPath(nn.Module):
     """Drop paths (Stochastic Depth) per sample  (when applied in main path of residual blocks).
     """
 
@@ -83,7 +61,7 @@ class DropPath(nn.Layer):
         return drop_path(x, self.drop_prob, self.training)
 
 
-class Identity(nn.Layer):
+class Identity(nn.Module):
     def __init__(self):
         super(Identity, self).__init__()
 
@@ -91,7 +69,7 @@ class Identity(nn.Layer):
         return input
 
 
-class Mlp(nn.Layer):
+class Mlp(nn.Module):
     def __init__(self,
                  in_features,
                  hidden_features=None,
@@ -115,7 +93,7 @@ class Mlp(nn.Layer):
         return x
 
 
-class ConvMixer(nn.Layer):
+class ConvMixer(nn.Module):
     def __init__(
             self,
             dim,
@@ -125,24 +103,24 @@ class ConvMixer(nn.Layer):
         super().__init__()
         self.HW = HW
         self.dim = dim
-        self.local_mixer = nn.Conv2D(
+        self.local_mixer = nn.Conv2d(
             dim,
             dim,
             local_k,
             1, [local_k[0] // 2, local_k[1] // 2],
-            groups=num_heads,
-            weight_attr=ParamAttr(initializer=KaimingNormal()))
+            groups=num_heads)
+        nn.init.kaiming_normal(self.local_mixer.weight.data)
 
     def forward(self, x):
         h = self.HW[0]
         w = self.HW[1]
-        x = x.transpose([0, 2, 1]).reshape([0, self.dim, h, w])
+        x = x.permute([0, 2, 1]).reshape([0, self.dim, h, w])
         x = self.local_mixer(x)
-        x = x.flatten(2).transpose([0, 2, 1])
+        x = x.flatten(2).permute([0, 2, 1])
         return x
 
 
-class Attention(nn.Layer):
+class Attention(nn.Module):
     def __init__(self,
                  dim,
                  num_heads=8,
@@ -158,7 +136,7 @@ class Attention(nn.Layer):
         head_dim = dim // num_heads
         self.scale = qk_scale or head_dim**-0.5
 
-        self.qkv = nn.Linear(dim, dim * 3, bias_attr=qkv_bias)
+        self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
         self.attn_drop = nn.Dropout(attn_drop)
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
@@ -171,14 +149,14 @@ class Attention(nn.Layer):
         if mixer == 'Local' and HW is not None:
             hk = local_k[0]
             wk = local_k[1]
-            mask = paddle.ones([H * W, H + hk - 1, W + wk - 1], dtype='float32')
+            mask = torch.ones([H * W, H + hk - 1, W + wk - 1]).float()
             for h in range(0, H):
                 for w in range(0, W):
                     mask[h * W + w, h:h + hk, w:w + wk] = 0.
             mask_paddle = mask[:, hk // 2:H + hk // 2, wk // 2:W + wk //
                                2].flatten(1)
-            mask_inf = paddle.full([H * W, H * W], '-inf', dtype='float32')
-            mask = paddle.where(mask_paddle < 1, mask_paddle, mask_inf)
+            mask_inf = torch.full([H * W, H * W], fill_value=-torch.inf)
+            mask = torch.where(mask_paddle < 1, mask_paddle, mask_inf)
             self.mask = mask.unsqueeze([0, 1])
         self.mixer = mixer
 
@@ -189,22 +167,22 @@ class Attention(nn.Layer):
         else:
             _, N, C = x.shape
         qkv = self.qkv(x).reshape((0, N, 3, self.num_heads, C //
-                                   self.num_heads)).transpose((2, 0, 3, 1, 4))
+                                   self.num_heads)).permute((2, 0, 3, 1, 4))
         q, k, v = qkv[0] * self.scale, qkv[1], qkv[2]
 
-        attn = (q.matmul(k.transpose((0, 1, 3, 2))))
+        attn = (q.matmul(k.permute((0, 1, 3, 2))))
         if self.mixer == 'Local':
             attn += self.mask
-        attn = nn.functional.softmax(attn, axis=-1)
+        attn = F.softmax(attn, dim=-1)
         attn = self.attn_drop(attn)
 
-        x = (attn.matmul(v)).transpose((0, 2, 1, 3)).reshape((0, N, C))
+        x = (attn.matmul(v)).permute((0, 2, 1, 3)).reshape((0, N, C))
         x = self.proj(x)
         x = self.proj_drop(x)
         return x
 
 
-class Block(nn.Layer):
+class Block(nn.Module):
     def __init__(self,
                  dim,
                  num_heads,
@@ -218,7 +196,7 @@ class Block(nn.Layer):
                  attn_drop=0.,
                  drop_path=0.,
                  act_layer=nn.GELU,
-                 norm_layer='nn.LayerNorm',
+                 norm_layer=nn.LayerNorm,
                  epsilon=1e-6,
                  prenorm=True):
         super().__init__()
@@ -266,7 +244,7 @@ class Block(nn.Layer):
         return x
 
 
-class PatchEmbed(nn.Layer):
+class PatchEmbed(nn.Module):
     """ Image to Patch Embedding
     """
 
@@ -291,7 +269,7 @@ class PatchEmbed(nn.Layer):
                     stride=2,
                     padding=1,
                     act=nn.GELU,
-                    bias_attr=None),
+                    bias_attr=False),
                 ConvBNLayer(
                     in_channels=embed_dim // 2,
                     out_channels=embed_dim,
@@ -299,7 +277,7 @@ class PatchEmbed(nn.Layer):
                     stride=2,
                     padding=1,
                     act=nn.GELU,
-                    bias_attr=None))
+                    bias_attr=False))
         if sub_num == 3:
             self.proj = nn.Sequential(
                 ConvBNLayer(
@@ -309,7 +287,7 @@ class PatchEmbed(nn.Layer):
                     stride=2,
                     padding=1,
                     act=nn.GELU,
-                    bias_attr=None),
+                    bias_attr=False),
                 ConvBNLayer(
                     in_channels=embed_dim // 4,
                     out_channels=embed_dim // 2,
@@ -317,7 +295,7 @@ class PatchEmbed(nn.Layer):
                     stride=2,
                     padding=1,
                     act=nn.GELU,
-                    bias_attr=None),
+                    bias_attr=False),
                 ConvBNLayer(
                     in_channels=embed_dim // 2,
                     out_channels=embed_dim,
@@ -325,17 +303,17 @@ class PatchEmbed(nn.Layer):
                     stride=2,
                     padding=1,
                     act=nn.GELU,
-                    bias_attr=None))
+                    bias_attr=False))
 
     def forward(self, x):
         B, C, H, W = x.shape
         assert H == self.img_size[0] and W == self.img_size[1], \
             f"Input image size ({H}*{W}) doesn't match model ({self.img_size[0]}*{self.img_size[1]})."
-        x = self.proj(x).flatten(2).transpose((0, 2, 1))
+        x = self.proj(x).flatten(2).permute((0, 2, 1))
         return x
 
 
-class SubSample(nn.Layer):
+class SubSample(nn.Module):
     def __init__(self,
                  in_channels,
                  out_channels,
@@ -346,19 +324,19 @@ class SubSample(nn.Layer):
         super().__init__()
         self.types = types
         if types == 'Pool':
-            self.avgpool = nn.AvgPool2D(
+            self.avgpool = nn.AvgPool2d(
                 kernel_size=[3, 5], stride=stride, padding=[1, 2])
-            self.maxpool = nn.MaxPool2D(
+            self.maxpool = nn.MaxPool2d(
                 kernel_size=[3, 5], stride=stride, padding=[1, 2])
             self.proj = nn.Linear(in_channels, out_channels)
         else:
-            self.conv = nn.Conv2D(
+            self.conv = nn.Conv2d(
                 in_channels,
                 out_channels,
                 kernel_size=3,
                 stride=stride,
-                padding=1,
-                weight_attr=ParamAttr(initializer=KaimingNormal()))
+                padding=1)
+            nn.init.kaiming_normal(self.conv.weight.data)
         self.norm = eval(sub_norm)(out_channels)
         if act is not None:
             self.act = act()
@@ -371,10 +349,10 @@ class SubSample(nn.Layer):
             x1 = self.avgpool(x)
             x2 = self.maxpool(x)
             x = (x1 + x2) * 0.5
-            out = self.proj(x.flatten(2).transpose((0, 2, 1)))
+            out = self.proj(x.flatten(2).permute((0, 2, 1)))
         else:
             x = self.conv(x)
-            out = x.flatten(2).transpose((0, 2, 1))
+            out = x.flatten(2).permute((0, 2, 1))
         out = self.norm(out)
         if self.act is not None:
             out = self.act(out)
@@ -382,7 +360,7 @@ class SubSample(nn.Layer):
         return out
 
 
-class SVTRNet(nn.Layer):
+class SVTRNet(nn.Module):
     def __init__(
             self,
             img_size=[32, 100],
@@ -426,14 +404,13 @@ class SVTRNet(nn.Layer):
             sub_num=sub_num)
         num_patches = self.patch_embed.num_patches
         self.HW = [img_size[0] // (2**sub_num), img_size[1] // (2**sub_num)]
-        self.pos_embed = self.create_parameter(
-            shape=[1, num_patches, embed_dim[0]], default_initializer=zeros_)
+        self.pos_embed = self.create_parameter(shape=[1, num_patches, embed_dim[0]])
         self.add_parameter("pos_embed", self.pos_embed)
         self.pos_drop = nn.Dropout(p=drop_rate)
         Block_unit = eval(block_unit)
 
         dpr = np.linspace(0, drop_path_rate, sum(depth))
-        self.blocks1 = nn.LayerList([
+        self.blocks1 = nn.ModuleList([
             Block_unit(
                 dim=embed_dim[0],
                 num_heads=num_heads[0],
@@ -462,7 +439,7 @@ class SVTRNet(nn.Layer):
         else:
             HW = self.HW
         self.patch_merging = patch_merging
-        self.blocks2 = nn.LayerList([
+        self.blocks2 = nn.ModuleList([
             Block_unit(
                 dim=embed_dim[1],
                 num_heads=num_heads[1],
@@ -490,7 +467,7 @@ class SVTRNet(nn.Layer):
             HW = [self.HW[0] // 4, self.HW[1]]
         else:
             HW = self.HW
-        self.blocks3 = nn.LayerList([
+        self.blocks3 = nn.ModuleList([
             Block_unit(
                 dim=embed_dim[2],
                 num_heads=num_heads[2],
@@ -510,36 +487,35 @@ class SVTRNet(nn.Layer):
         ])
         self.last_stage = last_stage
         if last_stage:
-            self.avg_pool = nn.AdaptiveAvgPool2D([1, out_char_num])
-            self.last_conv = nn.Conv2D(
+            self.avg_pool = nn.AdaptiveAvgPool2d([1, out_char_num])
+            self.last_conv = nn.Conv2d(
                 in_channels=embed_dim[2],
                 out_channels=self.out_channels,
                 kernel_size=1,
                 stride=1,
                 padding=0,
-                bias_attr=False)
+                bias=False)
             self.hardswish = nn.Hardswish()
-            self.dropout = nn.Dropout(p=last_drop, mode="downscale_in_infer")
+            self.dropout = nn.Dropout(p=last_drop)
         if not prenorm:
             self.norm = eval(norm_layer)(embed_dim[-1], epsilon=epsilon)
         self.use_lenhead = use_lenhead
         if use_lenhead:
             self.len_conv = nn.Linear(embed_dim[2], self.out_channels)
             self.hardswish_len = nn.Hardswish()
-            self.dropout_len = nn.Dropout(
-                p=last_drop, mode="downscale_in_infer")
+            self.dropout_len = nn.Dropout(p=last_drop)
 
-        trunc_normal_(self.pos_embed)
+        nn.init.trunc_normal_(self.pos_embed, std=.02)
         self.apply(self._init_weights)
 
     def _init_weights(self, m):
         if isinstance(m, nn.Linear):
-            trunc_normal_(m.weight)
+            nn.init.trunc_normal_(m.weight, std=.02)
             if isinstance(m, nn.Linear) and m.bias is not None:
-                zeros_(m.bias)
+                m.bias.data.zero_()
         elif isinstance(m, nn.LayerNorm):
-            zeros_(m.bias)
-            ones_(m.weight)
+            m.bias.data.zero_()
+            m.weight.data.one_()
 
     def forward_features(self, x):
         x = self.patch_embed(x)
@@ -549,13 +525,13 @@ class SVTRNet(nn.Layer):
             x = blk(x)
         if self.patch_merging is not None:
             x = self.sub_sample1(
-                x.transpose([0, 2, 1]).reshape(
+                x.permute([0, 2, 1]).reshape(
                     [0, self.embed_dim[0], self.HW[0], self.HW[1]]))
         for blk in self.blocks2:
             x = blk(x)
         if self.patch_merging is not None:
             x = self.sub_sample2(
-                x.transpose([0, 2, 1]).reshape(
+                x.permute([0, 2, 1]).reshape(
                     [0, self.embed_dim[1], self.HW[0] // 2, self.HW[1]]))
         for blk in self.blocks3:
             x = blk(x)
@@ -574,7 +550,7 @@ class SVTRNet(nn.Layer):
             else:
                 h = self.HW[0]
             x = self.avg_pool(
-                x.transpose([0, 2, 1]).reshape(
+                x.permute([0, 2, 1]).reshape(
                     [0, self.embed_dim[2], h, self.HW[1]]))
             x = self.last_conv(x)
             x = self.hardswish(x)

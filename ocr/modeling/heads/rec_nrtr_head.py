@@ -21,7 +21,7 @@ from paddle.nn import LayerList
 from paddle.nn.initializer import XavierNormal as xavier_uniform_
 from paddle.nn import Dropout, Linear, LayerNorm, Conv2D
 import numpy as np
-from ppocr.modeling.heads.multiheadAttention import MultiheadAttention
+from ocr.modeling.heads.multiheadAttention import MultiheadAttention
 from paddle.nn.initializer import Constant as constant_
 from paddle.nn.initializer import XavierNormal as xavier_normal_
 
@@ -114,15 +114,15 @@ class Transformer(nn.Layer):
         tgt = tgt[:, :-1]
 
         tgt_key_padding_mask = self.generate_padding_mask(tgt)
-        tgt = self.embedding(tgt).transpose([1, 0, 2])
+        tgt = self.embedding(tgt).permute([1, 0, 2])
         tgt = self.positional_encoding(tgt)
         tgt_mask = self.generate_square_subsequent_mask(tgt.shape[0])
 
         if self.encoder is not None:
-            src = self.positional_encoding(src.transpose([1, 0, 2]))
+            src = self.positional_encoding(src.permute([1, 0, 2]))
             memory = self.encoder(src)
         else:
-            memory = src.squeeze(2).transpose([2, 0, 1])
+            memory = src.squeeze(2).permute([2, 0, 1])
         output = self.decoder(
             tgt,
             memory,
@@ -130,7 +130,7 @@ class Transformer(nn.Layer):
             memory_mask=None,
             tgt_key_padding_mask=tgt_key_padding_mask,
             memory_key_padding_mask=None)
-        output = output.transpose([1, 0, 2])
+        output = output.permute([1, 0, 2])
         logit = self.tgt_word_prj(output)
         return logit
 
@@ -159,14 +159,14 @@ class Transformer(nn.Layer):
     def forward_test(self, src):
         bs = paddle.shape(src)[0]
         if self.encoder is not None:
-            src = self.positional_encoding(paddle.transpose(src, [1, 0, 2]))
+            src = self.positional_encoding(paddle.permute(src, [1, 0, 2]))
             memory = self.encoder(src)
         else:
-            memory = paddle.transpose(paddle.squeeze(src, 2), [2, 0, 1])
+            memory = paddle.permute(paddle.squeeze(src, 2), [2, 0, 1])
         dec_seq = paddle.full((bs, 1), 2, dtype=paddle.int64)
         dec_prob = paddle.full((bs, 1), 1., dtype=paddle.float32)
         for len_dec_seq in range(1, 25):
-            dec_seq_embed = paddle.transpose(self.embedding(dec_seq), [1, 0, 2])
+            dec_seq_embed = paddle.permute(self.embedding(dec_seq), [1, 0, 2])
             dec_seq_embed = self.positional_encoding(dec_seq_embed)
             tgt_mask = self.generate_square_subsequent_mask(
                 paddle.shape(dec_seq_embed)[0])
@@ -177,7 +177,7 @@ class Transformer(nn.Layer):
                 memory_mask=None,
                 tgt_key_padding_mask=None,
                 memory_key_padding_mask=None)
-            dec_output = paddle.transpose(output, [1, 0, 2])
+            dec_output = paddle.permute(output, [1, 0, 2])
             dec_output = dec_output[:, -1, :]
             word_prob = F.softmax(self.tgt_word_prj(dec_output), axis=1)
             preds_idx = paddle.argmax(word_prob, axis=1)
@@ -230,8 +230,8 @@ class Transformer(nn.Layer):
             ]
             active_inst_idx = paddle.to_tensor(active_inst_idx, dtype='int64')
             active_src_enc = collect_active_part(
-                src_enc.transpose([1, 0, 2]), active_inst_idx,
-                n_prev_active_inst, n_bm).transpose([1, 0, 2])
+                src_enc.permute([1, 0, 2]), active_inst_idx,
+                n_prev_active_inst, n_bm).permute([1, 0, 2])
             active_inst_idx_to_position_map = get_inst_idx_to_tensor_position_map(
                 active_inst_idx_list)
             return active_src_enc, active_inst_idx_to_position_map
@@ -251,7 +251,7 @@ class Transformer(nn.Layer):
 
             def predict_word(dec_seq, enc_output, n_active_inst, n_bm,
                              memory_key_padding_mask):
-                dec_seq = paddle.transpose(self.embedding(dec_seq), [1, 0, 2])
+                dec_seq = paddle.permute(self.embedding(dec_seq), [1, 0, 2])
                 dec_seq = self.positional_encoding(dec_seq)
                 tgt_mask = self.generate_square_subsequent_mask(
                     paddle.shape(dec_seq)[0])
@@ -261,7 +261,7 @@ class Transformer(nn.Layer):
                     tgt_mask=tgt_mask,
                     tgt_key_padding_mask=None,
                     memory_key_padding_mask=memory_key_padding_mask, )
-                dec_output = paddle.transpose(dec_output, [1, 0, 2])
+                dec_output = paddle.permute(dec_output, [1, 0, 2])
                 dec_output = dec_output[:,
                                         -1, :]  # Pick the last step: (bh * bm) * d_h
                 word_prob = F.softmax(self.tgt_word_prj(dec_output), axis=1)
@@ -303,10 +303,10 @@ class Transformer(nn.Layer):
         with paddle.no_grad():
             #-- Encode
             if self.encoder is not None:
-                src = self.positional_encoding(images.transpose([1, 0, 2]))
+                src = self.positional_encoding(images.permute([1, 0, 2]))
                 src_enc = self.encoder(src)
             else:
-                src_enc = images.squeeze(2).transpose([0, 2, 1])
+                src_enc = images.squeeze(2).permute([0, 2, 1])
 
             n_bm = self.beam_size
             src_shape = paddle.shape(src_enc)
@@ -499,13 +499,13 @@ class TransformerEncoderLayer(nn.Layer):
         src = src + self.dropout1(src2)
         src = self.norm1(src)
 
-        src = paddle.transpose(src, [1, 2, 0])
+        src = paddle.permute(src, [1, 2, 0])
         src = paddle.unsqueeze(src, 2)
         src2 = self.conv2(F.relu(self.conv1(src)))
         src2 = paddle.squeeze(src2, 2)
-        src2 = paddle.transpose(src2, [2, 0, 1])
+        src2 = paddle.permute(src2, [2, 0, 1])
         src = paddle.squeeze(src, 2)
-        src = paddle.transpose(src, [2, 0, 1])
+        src = paddle.permute(src, [2, 0, 1])
 
         src = src + self.dropout2(src2)
         src = self.norm2(src)
@@ -592,13 +592,13 @@ class TransformerDecoderLayer(nn.Layer):
         tgt = self.norm2(tgt)
 
         # default
-        tgt = paddle.transpose(tgt, [1, 2, 0])
+        tgt = paddle.permute(tgt, [1, 2, 0])
         tgt = paddle.unsqueeze(tgt, 2)
         tgt2 = self.conv2(F.relu(self.conv1(tgt)))
         tgt2 = paddle.squeeze(tgt2, 2)
-        tgt2 = paddle.transpose(tgt2, [2, 0, 1])
+        tgt2 = paddle.permute(tgt2, [2, 0, 1])
         tgt = paddle.squeeze(tgt, 2)
-        tgt = paddle.transpose(tgt, [2, 0, 1])
+        tgt = paddle.permute(tgt, [2, 0, 1])
 
         tgt = tgt + self.dropout3(tgt2)
         tgt = self.norm3(tgt)
@@ -638,7 +638,7 @@ class PositionalEncoding(nn.Layer):
         pe[:, 0::2] = paddle.sin(position * div_term)
         pe[:, 1::2] = paddle.cos(position * div_term)
         pe = paddle.unsqueeze(pe, 0)
-        pe = paddle.transpose(pe, [1, 0, 2])
+        pe = paddle.permute(pe, [1, 0, 2])
         self.register_buffer('pe', pe)
 
     def forward(self, x):
@@ -683,7 +683,7 @@ class PositionalEncoding_2d(nn.Layer):
             (-math.log(10000.0) / dim))
         pe[:, 0::2] = paddle.sin(position * div_term)
         pe[:, 1::2] = paddle.cos(position * div_term)
-        pe = paddle.transpose(paddle.unsqueeze(pe, 0), [1, 0, 2])
+        pe = paddle.permute(paddle.unsqueeze(pe, 0), [1, 0, 2])
         self.register_buffer('pe', pe)
 
         self.avg_pool_1 = nn.AdaptiveAvgPool2D((1, 1))
@@ -706,17 +706,17 @@ class PositionalEncoding_2d(nn.Layer):
         w_pe = self.pe[:paddle.shape(x)[-1], :]
         w1 = self.linear1(self.avg_pool_1(x).squeeze()).unsqueeze(0)
         w_pe = w_pe * w1
-        w_pe = paddle.transpose(w_pe, [1, 2, 0])
+        w_pe = paddle.permute(w_pe, [1, 2, 0])
         w_pe = paddle.unsqueeze(w_pe, 2)
 
         h_pe = self.pe[:paddle.shape(x).shape[-2], :]
         w2 = self.linear2(self.avg_pool_2(x).squeeze()).unsqueeze(0)
         h_pe = h_pe * w2
-        h_pe = paddle.transpose(h_pe, [1, 2, 0])
+        h_pe = paddle.permute(h_pe, [1, 2, 0])
         h_pe = paddle.unsqueeze(h_pe, 3)
 
         x = x + w_pe + h_pe
-        x = paddle.transpose(
+        x = paddle.permute(
             paddle.reshape(x,
                            [x.shape[0], x.shape[1], x.shape[2] * x.shape[3]]),
             [2, 0, 1])

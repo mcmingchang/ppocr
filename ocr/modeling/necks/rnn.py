@@ -1,29 +1,13 @@
-# copyright (c) 2020 PaddlePaddle Authors. All Rights Reserve.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#    http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-import paddle
-from paddle import nn
-
-from ppocr.modeling.heads.rec_ctc_head import get_para_bias_attr
-from ppocr.modeling.backbones.rec_svtrnet import Block, ConvBNLayer, trunc_normal_, zeros_, ones_
+import torch
+from torch import nn
+from ocr.modeling.backbones.rec_svtrnet import Block, ConvBNLayer
 
 
-class Im2Seq(nn.Layer):
+class Im2Seq(nn.Module):
     def __init__(self, in_channels, **kwargs):
         super().__init__()
         self.out_channels = in_channels
@@ -31,12 +15,12 @@ class Im2Seq(nn.Layer):
     def forward(self, x):
         B, C, H, W = x.shape
         assert H == 1
-        x = x.squeeze(axis=2)
-        x = x.transpose([0, 2, 1])  # (NTC)(batch, width, channels)
+        x = x.squeeze(2)
+        x = x.permute([0, 2, 1])  # (NTC)(batch, width, channels)
         return x
 
 
-class EncoderWithRNN(nn.Layer):
+class EncoderWithRNN(nn.Module):
     def __init__(self, in_channels, hidden_size):
         super(EncoderWithRNN, self).__init__()
         self.out_channels = hidden_size * 2
@@ -48,25 +32,18 @@ class EncoderWithRNN(nn.Layer):
         return x
 
 
-class EncoderWithFC(nn.Layer):
+class EncoderWithFC(nn.Module):
     def __init__(self, in_channels, hidden_size):
         super(EncoderWithFC, self).__init__()
         self.out_channels = hidden_size
-        weight_attr, bias_attr = get_para_bias_attr(
-            l2_decay=0.00001, k=in_channels)
-        self.fc = nn.Linear(
-            in_channels,
-            hidden_size,
-            weight_attr=weight_attr,
-            bias_attr=bias_attr,
-            name='reduce_encoder_fea')
+        self.fc = nn.Linear(in_channels, hidden_size)
 
     def forward(self, x):
         x = self.fc(x)
         return x
 
 
-class EncoderWithSVTR(nn.Layer):
+class EncoderWithSVTR(nn.Module):
     def __init__(
             self,
             in_channels,
@@ -85,11 +62,11 @@ class EncoderWithSVTR(nn.Layer):
         self.depth = depth
         self.use_guide = use_guide
         self.conv1 = ConvBNLayer(
-            in_channels, in_channels // 8, padding=1, act=nn.Swish)
+            in_channels, in_channels // 8, padding=1, act=nn.SiLU)
         self.conv2 = ConvBNLayer(
-            in_channels // 8, hidden_dims, kernel_size=1, act=nn.Swish)
+            in_channels // 8, hidden_dims, kernel_size=1, act=nn.SiLU)
 
-        self.svtr_block = nn.LayerList([
+        self.svtr_block = nn.ModuleList([
             Block(
                 dim=hidden_dims,
                 num_heads=num_heads,
@@ -99,33 +76,33 @@ class EncoderWithSVTR(nn.Layer):
                 qkv_bias=qkv_bias,
                 qk_scale=qk_scale,
                 drop=drop_rate,
-                act_layer=nn.Swish,
+                act_layer=nn.SiLU,
                 attn_drop=attn_drop_rate,
                 drop_path=drop_path,
                 norm_layer='nn.LayerNorm',
                 epsilon=1e-05,
-                prenorm=False) for i in range(depth)
+                prenorm=False) for _ in range(depth)
         ])
-        self.norm = nn.LayerNorm(hidden_dims, epsilon=1e-6)
+        self.norm = nn.LayerNorm(hidden_dims, eps=1e-6)
         self.conv3 = ConvBNLayer(
-            hidden_dims, in_channels, kernel_size=1, act=nn.Swish)
+            hidden_dims, in_channels, kernel_size=1, act=nn.SiLU)
         # last conv-nxn, the input is concat of input tensor and conv3 output tensor
         self.conv4 = ConvBNLayer(
-            2 * in_channels, in_channels // 8, padding=1, act=nn.Swish)
+            2 * in_channels, in_channels // 8, padding=1, act=nn.SiLU)
 
         self.conv1x1 = ConvBNLayer(
-            in_channels // 8, dims, kernel_size=1, act=nn.Swish)
+            in_channels // 8, dims, kernel_size=1, act=nn.SiLU)
         self.out_channels = dims
         self.apply(self._init_weights)
 
     def _init_weights(self, m):
         if isinstance(m, nn.Linear):
-            trunc_normal_(m.weight)
+            nn.init.trunc_normal_(m.weight, std=0.2)
             if isinstance(m, nn.Linear) and m.bias is not None:
-                zeros_(m.bias)
+                m.bias.data.zero_()
         elif isinstance(m, nn.LayerNorm):
-            zeros_(m.bias)
-            ones_(m.weight)
+            m.bias.data.zero_()
+            m.weight.data.one_()
 
     def forward(self, x):
         # for use guide
@@ -141,19 +118,19 @@ class EncoderWithSVTR(nn.Layer):
         z = self.conv2(z)
         # SVTR global block
         B, C, H, W = z.shape
-        z = z.flatten(2).transpose([0, 2, 1])
+        z = z.flatten(2).permute(0, 2, 1)
         for blk in self.svtr_block:
             z = blk(z)
         z = self.norm(z)
         # last stage
-        z = z.reshape([0, H, W, C]).transpose([0, 3, 1, 2])
+        z = z.reshape([0, H, W, C]).permute(0, 3, 1, 2)
         z = self.conv3(z)
-        z = paddle.concat((h, z), axis=1)
+        z = torch.concat((h, z), dim=1)
         z = self.conv1x1(self.conv4(z))
         return z
 
 
-class SequenceEncoder(nn.Layer):
+class SequenceEncoder(nn.Module):
     def __init__(self, in_channels, encoder_type, hidden_size=48, **kwargs):
         super(SequenceEncoder, self).__init__()
         self.encoder_reshape = Im2Seq(in_channels)

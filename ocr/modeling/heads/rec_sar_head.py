@@ -21,14 +21,12 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-import math
-import paddle
-from paddle import ParamAttr
-import paddle.nn as nn
-import paddle.nn.functional as F
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 
 
-class SAREncoder(nn.Layer):
+class SAREncoder(nn.Module):
     """
     Args:
         enc_bi_rnn (bool): If True, use bidirectional RNN in encoder.
@@ -83,7 +81,7 @@ class SAREncoder(nn.Layer):
 
     def forward(self, feat, img_metas=None):
         if img_metas is not None:
-            assert len(img_metas[0]) == paddle.shape(feat)[0]
+            assert len(img_metas[0]) == feat.shape[0]
 
         valid_ratios = None
         if img_metas is not None and self.mask:
@@ -93,17 +91,17 @@ class SAREncoder(nn.Layer):
         feat_v = F.max_pool2d(
             feat, kernel_size=(h_feat, 1), stride=1, padding=0)
         feat_v = feat_v.squeeze(2)  # bsz * C * W
-        feat_v = paddle.transpose(feat_v, perm=[0, 2, 1])  # bsz * W * C
+        feat_v = feat_v.permute(0, 2, 1)  # bsz * W * C
         holistic_feat = self.rnn_encoder(feat_v)[0]  # bsz * T * C
 
         if valid_ratios is not None:
             valid_hf = []
-            T = paddle.shape(holistic_feat)[1]
-            for i in range(paddle.shape(valid_ratios)[0]):
-                valid_step = paddle.minimum(
-                    T, paddle.ceil(valid_ratios[i] * T).astype('int32')) - 1
+            T = holistic_feat.shape[1]
+            for i in range(valid_ratios.shape[0]):
+                valid_step = torch.minimum(
+                    T, torch.ceil(valid_ratios[i] * T).astype('int32')) - 1
                 valid_hf.append(holistic_feat[i, valid_step, :])
-            valid_hf = paddle.stack(valid_hf, axis=0)
+            valid_hf = torch.stack(valid_hf, dim=0)
         else:
             valid_hf = holistic_feat[:, -1, :]  # bsz * C
         holistic_feat = self.linear(valid_hf)  # bsz * C
@@ -111,7 +109,7 @@ class SAREncoder(nn.Layer):
         return holistic_feat
 
 
-class BaseDecoder(nn.Layer):
+class BaseDecoder(nn.Module):
     def __init__(self, **kwargs):
         super().__init__()
 
@@ -185,7 +183,7 @@ class ParallelSARDecoder(BaseDecoder):
 
         # 2D attention layer
         self.conv1x1_1 = nn.Linear(decoder_rnn_out_size, d_k)
-        self.conv3x3_1 = nn.Conv2D(
+        self.conv3x3_1 = nn.Conv2d(
             d_model, d_k, kernel_size=3, stride=1, padding=1)
         self.conv1x1_2 = nn.Linear(d_k, 1)
 
@@ -214,7 +212,7 @@ class ParallelSARDecoder(BaseDecoder):
             padding_idx=self.padding_idx)
 
         # Prediction layer
-        self.pred_dropout = nn.Dropout(pred_dropout)
+        self.pred_dropout = nn.Dropout()
         pred_num_classes = self.num_classes - 1
         if pred_concat:
             fc_in_channel = decoder_rnn_out_size + d_model + encoder_rnn_out_size
@@ -233,7 +231,7 @@ class ParallelSARDecoder(BaseDecoder):
 
         attn_query = self.conv1x1_1(y)  # bsz * (seq_len + 1) * attn_size
         bsz, seq_len, attn_size = attn_query.shape
-        attn_query = paddle.unsqueeze(attn_query, axis=[3, 4])
+        attn_query = attn_query.unsqueeze(dim=-1).unsqueeze(dim=-1)
         # (bsz, seq_len + 1, attn_size, 1, 1)
 
         attn_key = self.conv3x3_1(feat)
@@ -241,32 +239,32 @@ class ParallelSARDecoder(BaseDecoder):
         attn_key = attn_key.unsqueeze(1)
         # bsz * 1 * attn_size * h * w
 
-        attn_weight = paddle.tanh(paddle.add(attn_key, attn_query))
+        attn_weight = torch.tanh(torch.add(attn_key, attn_query))
 
         # bsz * (seq_len + 1) * attn_size * h * w
-        attn_weight = paddle.transpose(attn_weight, perm=[0, 1, 3, 4, 2])
+        attn_weight = attn_weight.permute(0, 1, 3, 4, 2)
         # bsz * (seq_len + 1) * h * w * attn_size
         attn_weight = self.conv1x1_2(attn_weight)
         # bsz * (seq_len + 1) * h * w * 1
-        bsz, T, h, w, c = paddle.shape(attn_weight)
+        bsz, T, h, w, c = attn_weight.shape
         assert c == 1
 
         if valid_ratios is not None:
             # cal mask of attention weight
-            for i in range(paddle.shape(valid_ratios)[0]):
-                valid_width = paddle.minimum(
-                    w, paddle.ceil(valid_ratios[i] * w).astype("int32"))
+            for i in range(valid_ratios.shape[0]):
+                valid_width = torch.minimum(
+                    w, torch.ceil(valid_ratios[i] * w).astype("int32"))
                 if valid_width < w:
                     attn_weight[i, :, :, valid_width:, :] = float('-inf')
 
-        attn_weight = paddle.reshape(attn_weight, [bsz, T, -1])
-        attn_weight = F.softmax(attn_weight, axis=-1)
+        attn_weight = attn_weight.reshape(bsz, T, -1)
+        attn_weight = F.softmax(attn_weight, dim=-1)
 
-        attn_weight = paddle.reshape(attn_weight, [bsz, T, h, w, c])
-        attn_weight = paddle.transpose(attn_weight, perm=[0, 1, 4, 2, 3])
+        attn_weight = attn_weight.reshape(bsz, T, h, w, c)
+        attn_weight = attn_weight.permute(0, 1, 4, 2, 3)
         # attn_weight: bsz * T * c * h * w
         # feat: bsz * c * h * w
-        attn_feat = paddle.sum(paddle.multiply(feat.unsqueeze(1), attn_weight),
+        attn_feat = torch.sum(torch.multiply(feat.unsqueeze(1), attn_weight),
                                (3, 4),
                                keepdim=False)
         # bsz * (seq_len + 1) * C
@@ -274,9 +272,8 @@ class ParallelSARDecoder(BaseDecoder):
         # Linear transformation
         if self.pred_concat:
             hf_c = holistic_feat.shape[-1]
-            holistic_feat = paddle.expand(
-                holistic_feat, shape=[bsz, seq_len, hf_c])
-            y = self.prediction(paddle.concat((y, attn_feat, holistic_feat), 2))
+            holistic_feat = holistic_feat.expand(bsz, seq_len, hf_c)
+            y = self.prediction(torch.concat((y, attn_feat, holistic_feat), 2))
         else:
             y = self.prediction(attn_feat)
         # bsz * (seq_len + 1) * num_classes
@@ -290,7 +287,7 @@ class ParallelSARDecoder(BaseDecoder):
         img_metas: [label, valid_ratio]
         '''
         if img_metas is not None:
-            assert paddle.shape(img_metas[0])[0] == paddle.shape(feat)[0]
+            assert img_metas[0].shape[0] == feat.shape[0]
 
         valid_ratios = None
         if img_metas is not None and self.mask:
@@ -300,7 +297,7 @@ class ParallelSARDecoder(BaseDecoder):
         # bsz * seq_len * emb_dim
         out_enc = out_enc.unsqueeze(1)
         # bsz * 1 * emb_dim
-        in_dec = paddle.concat((out_enc, lab_embedding), axis=1)
+        in_dec = torch.concat((out_enc, lab_embedding), dim=1)
         # bsz * (seq_len + 1) * C
         out_dec = self._2d_attention(
             in_dec, feat, out_enc, valid_ratios=valid_ratios)
@@ -317,18 +314,18 @@ class ParallelSARDecoder(BaseDecoder):
 
         seq_len = self.max_seq_len
         bsz = feat.shape[0]
-        start_token = paddle.full(
-            (bsz, ), fill_value=self.start_idx, dtype='int64')
+        start_token = torch.full(
+            (bsz, ), fill_value=self.start_idx).long()
         # bsz
         start_token = self.embedding(start_token)
         # bsz * emb_dim
         emb_dim = start_token.shape[1]
         start_token = start_token.unsqueeze(1)
-        start_token = paddle.expand(start_token, shape=[bsz, seq_len, emb_dim])
+        start_token = start_token.expand(bsz, seq_len, emb_dim)
         # bsz * seq_len * emb_dim
         out_enc = out_enc.unsqueeze(1)
         # bsz * 1 * emb_dim
-        decoder_input = paddle.concat((out_enc, start_token), axis=1)
+        decoder_input = torch.concat((out_enc, start_token), dim=1)
         # bsz * (seq_len + 1) * emb_dim
 
         outputs = []
@@ -338,17 +335,17 @@ class ParallelSARDecoder(BaseDecoder):
             char_output = decoder_output[:, i, :]  # bsz * num_classes
             char_output = F.softmax(char_output, -1)
             outputs.append(char_output)
-            max_idx = paddle.argmax(char_output, axis=1, keepdim=False)
+            max_idx = torch.argmax(char_output, dim=1, keepdim=False)
             char_embedding = self.embedding(max_idx)  # bsz * emb_dim
             if i < seq_len:
                 decoder_input[:, i + 1, :] = char_embedding
 
-        outputs = paddle.stack(outputs, 1)  # bsz * seq_len * num_classes
+        outputs = torch.stack(outputs, 1)  # bsz * seq_len * num_classes
 
         return outputs
 
 
-class SARHead(nn.Layer):
+class SARHead(nn.Module):
     def __init__(self,
                  in_channels,
                  out_channels,

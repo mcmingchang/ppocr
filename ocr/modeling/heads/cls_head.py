@@ -17,12 +17,12 @@ from __future__ import division
 from __future__ import print_function
 
 import math
-import paddle
-from paddle import nn, ParamAttr
-import paddle.nn.functional as F
+import torch
+from torch import nn, ParamAttr
+import torch.nn.functional as F
 
 
-class ClsHead(nn.Layer):
+class ClsHead(nn.Module):
     """
     Class orientation
 
@@ -33,20 +33,13 @@ class ClsHead(nn.Layer):
 
     def __init__(self, in_channels, class_dim, **kwargs):
         super(ClsHead, self).__init__()
-        self.pool = nn.AdaptiveAvgPool2D(1)
-        stdv = 1.0 / math.sqrt(in_channels * 1.0)
-        self.fc = nn.Linear(
-            in_channels,
-            class_dim,
-            weight_attr=ParamAttr(
-                name="fc_0.w_0",
-                initializer=nn.initializer.Uniform(-stdv, stdv)),
-            bias_attr=ParamAttr(name="fc_0.b_0"), )
+        self.pool = nn.AdaptiveAvgPool2d(1)
+        self.fc = nn.Linear(in_channels, class_dim, bias=True)
 
     def forward(self, x, targets=None):
         x = self.pool(x)
-        x = paddle.reshape(x, shape=[x.shape[0], x.shape[1]])
+        x = x.reshape(x.shape[0], x.shape[1])
         x = self.fc(x)
         if not self.training:
-            x = F.softmax(x, axis=1)
+            x = F.softmax(x, dim=1)
         return x

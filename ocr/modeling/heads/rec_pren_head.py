@@ -16,11 +16,11 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-from paddle import nn
-from paddle.nn import functional as F
+from torch import nn
+from torch.nn import functional as F
 
 
-class PRENHead(nn.Layer):
+class PRENHead(nn.Module):
     def __init__(self, in_channels, out_channels, **kwargs):
         super(PRENHead, self).__init__()
         self.linear = nn.Linear(in_channels, out_channels)

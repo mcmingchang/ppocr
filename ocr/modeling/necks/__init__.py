@@ -16,15 +16,15 @@ __all__ = ['build_neck']
 
 
 def build_neck(config):
-    from .db_fpn import DBFPN, RSEFPN, LKPAN
-    from .east_fpn import EASTFPN
-    from .sast_fpn import SASTFPN
+    # from .db_fpn import DBFPN, RSEFPN, LKPAN
+    # from .east_fpn import EASTFPN
+    # from .sast_fpn import SASTFPN
     from .rnn import SequenceEncoder
-    from .pg_fpn import PGFPN
-    from .table_fpn import TableFPN
-    from .fpn import FPN
-    from .fce_fpn import FCEFPN
-    from .pren_fpn import PRENFPN
+    # from .pg_fpn import PGFPN
+    # from .table_fpn import TableFPN
+    # from .fpn import FPN
+    # from .fce_fpn import FCEFPN
+    # from .pren_fpn import PRENFPN
     support_dict = [
         'FPN', 'FCEFPN', 'LKPAN', 'DBFPN', 'RSEFPN', 'EASTFPN', 'SASTFPN',
         'SequenceEncoder', 'PGFPN', 'TableFPN', 'PRENFPN'

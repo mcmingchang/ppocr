@@ -20,9 +20,9 @@ from __future__ import division
 from __future__ import print_function
 
 import math
-import paddle
-from paddle import nn, ParamAttr
-from paddle.nn import functional as F
+import torch
+from torch import nn
+from torch.nn import functional as F
 import numpy as np
 
 from .tps_spatial_transformer import TPSSpatialTransformer
@@ -31,20 +31,20 @@ from .tps_spatial_transformer import TPSSpatialTransformer
 def conv3x3_block(in_channels, out_channels, stride=1):
     n = 3 * 3 * out_channels
     w = math.sqrt(2. / n)
-    conv_layer = nn.Conv2D(
+    conv_layer = nn.Conv2d(
         in_channels,
         out_channels,
         kernel_size=3,
         stride=stride,
         padding=1,
-        weight_attr=nn.initializer.Normal(
-            mean=0.0, std=w),
-        bias_attr=nn.initializer.Constant(0))
-    block = nn.Sequential(conv_layer, nn.BatchNorm2D(out_channels), nn.ReLU())
+        bias=True)
+    nn.init.normal(conv_layer.weight.data, mean=0.0, std=w)
+    conv_layer.bias.data.zero_()
+    block = nn.Sequential(conv_layer, nn.BatchNorm2d(out_channels), nn.ReLU())
     return block
 
 
-class STN(nn.Layer):
+class STN(nn.Module):
     def __init__(self, in_channels, num_ctrlpoints, activation='none'):
         super(STN, self).__init__()
         self.in_channels = in_channels
@@ -52,35 +52,34 @@ class STN(nn.Layer):
         self.activation = activation
         self.stn_convnet = nn.Sequential(
             conv3x3_block(in_channels, 32),  #32x64
-            nn.MaxPool2D(
+            nn.MaxPool2d(
                 kernel_size=2, stride=2),
             conv3x3_block(32, 64),  #16x32
-            nn.MaxPool2D(
+            nn.MaxPool2d(
                 kernel_size=2, stride=2),
             conv3x3_block(64, 128),  # 8*16
-            nn.MaxPool2D(
+            nn.MaxPool2d(
                 kernel_size=2, stride=2),
             conv3x3_block(128, 256),  # 4*8
-            nn.MaxPool2D(
+            nn.MaxPool2d(
                 kernel_size=2, stride=2),
             conv3x3_block(256, 256),  # 2*4,
-            nn.MaxPool2D(
+            nn.MaxPool2d(
                 kernel_size=2, stride=2),
             conv3x3_block(256, 256))  # 1*2
         self.stn_fc1 = nn.Sequential(
-            nn.Linear(
-                2 * 256,
-                512,
-                weight_attr=nn.initializer.Normal(0, 0.001),
-                bias_attr=nn.initializer.Constant(0)),
-            nn.BatchNorm1D(512),
+            nn.Linear(2 * 256, 512),
+            nn.BatchNorm1d(512),
             nn.ReLU())
+        for conv in self.stn_fc1:
+            if isinstance(conv, nn.Conv2d):
+                nn.init.normal(conv.weight.data, mean=0, std=0.001)
+                conv.bias.data.zero_()
+
         fc2_bias = self.init_stn()
-        self.stn_fc2 = nn.Linear(
-            512,
-            num_ctrlpoints * 2,
-            weight_attr=nn.initializer.Constant(0.0),
-            bias_attr=nn.initializer.Assign(fc2_bias))
+        self.stn_fc2 = nn.Linear(512, num_ctrlpoints * 2)
+        self.stn_fc2.weight.data.zero_()
+        self.stn_fc2.bias.data = fc2_bias
 
     def init_stn(self):
         margin = 0.01
@@ -96,24 +95,23 @@ class STN(nn.Layer):
             pass
         elif self.activation == 'sigmoid':
             ctrl_points = -np.log(1. / ctrl_points - 1.)
-        ctrl_points = paddle.to_tensor(ctrl_points)
-        fc2_bias = paddle.reshape(
-            ctrl_points, shape=[ctrl_points.shape[0] * ctrl_points.shape[1]])
+        ctrl_points = torch.tensor(ctrl_points)
+        fc2_bias = ctrl_points.reshape(ctrl_points.shape[0] * ctrl_points.shape[1])
         return fc2_bias
 
     def forward(self, x):
         x = self.stn_convnet(x)
         batch_size, _, h, w = x.shape
-        x = paddle.reshape(x, shape=(batch_size, -1))
+        x = x.reshape(batch_size, -1)
         img_feat = self.stn_fc1(x)
         x = self.stn_fc2(0.1 * img_feat)
         if self.activation == 'sigmoid':
             x = F.sigmoid(x)
-        x = paddle.reshape(x, shape=[-1, self.num_ctrlpoints, 2])
+        x = x.reshape(-1, self.num_ctrlpoints, 2)
         return img_feat, x
 
 
-class STN_ON(nn.Layer):
+class STN_ON(nn.Module):
     def __init__(self, in_channels, tps_inputsize, tps_outputsize,
                  num_control_points, tps_margins, stn_activation):
         super(STN_ON, self).__init__()
@@ -128,7 +126,7 @@ class STN_ON(nn.Layer):
         self.out_channels = in_channels
 
     def forward(self, image):
-        stn_input = paddle.nn.functional.interpolate(
+        stn_input = F.interpolate(
             image, self.tps_inputsize, mode="bilinear", align_corners=True)
         stn_img_feat, ctrl_points = self.stn_head(stn_input)
         x, _ = self.tps(image, ctrl_points)

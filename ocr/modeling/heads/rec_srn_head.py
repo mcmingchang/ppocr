@@ -16,23 +16,18 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-import math
-import paddle
-from paddle import nn, ParamAttr
-from paddle.nn import functional as F
-import paddle.fluid as fluid
-import numpy as np
+import torch
+from torch import nn
+from torch.nn import functional as F
+
 from .self_attention import WrapEncoderForFeature
 from .self_attention import WrapEncoder
-from paddle.static import Program
-from ppocr.modeling.backbones.rec_resnet_fpn import ResNetFPN
-import paddle.fluid.framework as framework
-
 from collections import OrderedDict
+
 gradient_clip = 10
 
 
-class PVAM(nn.Layer):
+class PVAM(nn.Module):
     def __init__(self, in_channels, char_num, max_text_length, num_heads,
                  num_encoder_tus, hidden_dims):
         super(PVAM, self).__init__()
@@ -61,20 +56,20 @@ class PVAM(nn.Layer):
             weight_sharing=True)
 
         # PVAM
-        self.flatten0 = paddle.nn.Flatten(start_axis=0, stop_axis=1)
-        self.fc0 = paddle.nn.Linear(
+        self.flatten0 = torch.nn.Flatten(start_dim=0, end_dim=1)
+        self.fc0 = torch.nn.Linear(
             in_features=in_channels,
             out_features=in_channels, )
-        self.emb = paddle.nn.Embedding(
+        self.emb = torch.nn.Embedding(
             num_embeddings=self.max_length, embedding_dim=in_channels)
-        self.flatten1 = paddle.nn.Flatten(start_axis=0, stop_axis=2)
-        self.fc1 = paddle.nn.Linear(
-            in_features=in_channels, out_features=1, bias_attr=False)
+        self.flatten1 = torch.nn.Flatten(start_dim=0, end_dim=2)
+        self.fc1 = torch.nn.Linear(
+            in_features=in_channels, out_features=1, bias=False)
 
     def forward(self, inputs, encoder_word_pos, gsrm_word_pos):
         b, c, h, w = inputs.shape
-        conv_features = paddle.reshape(inputs, shape=[-1, c, h * w])
-        conv_features = paddle.transpose(conv_features, perm=[0, 2, 1])
+        conv_features = inputs.reshape(-1, c, h * w)
+        conv_features = conv_features.permute(0, 2, 1)
         # transformer encoder
         b, t, c = conv_features.shape
 
@@ -84,24 +79,22 @@ class PVAM(nn.Layer):
         # pvam
         b, t, c = word_features.shape
         word_features = self.fc0(word_features)
-        word_features_ = paddle.reshape(word_features, [-1, 1, t, c])
-        word_features_ = paddle.tile(word_features_, [1, self.max_length, 1, 1])
+        word_features_ = word_features.reshape(-1, 1, t, c)
+        word_features_ = torch.tile(word_features_, [1, self.max_length, 1, 1])
         word_pos_feature = self.emb(gsrm_word_pos)
-        word_pos_feature_ = paddle.reshape(word_pos_feature,
-                                           [-1, self.max_length, 1, c])
-        word_pos_feature_ = paddle.tile(word_pos_feature_, [1, 1, t, 1])
+        word_pos_feature_ = word_pos_feature.reshape(-1, self.max_length, 1, c)
+        word_pos_feature_ = torch.tile(word_pos_feature_, [1, 1, t, 1])
         y = word_pos_feature_ + word_features_
         y = F.tanh(y)
         attention_weight = self.fc1(y)
-        attention_weight = paddle.reshape(
-            attention_weight, shape=[-1, self.max_length, t])
-        attention_weight = F.softmax(attention_weight, axis=-1)
-        pvam_features = paddle.matmul(attention_weight,
-                                      word_features)  #[b, max_length, c]
+        attention_weight = attention_weight.reshape(-1, self.max_length, t)
+        attention_weight = F.softmax(attention_weight, dim=-1)
+        pvam_features = torch.matmul(attention_weight,
+                                     word_features)  # [b, max_length, c]
         return pvam_features
 
 
-class GSRM(nn.Layer):
+class GSRM(nn.Module):
     def __init__(self, in_channels, char_num, max_text_length, num_heads,
                  num_encoder_tus, num_decoder_tus, hidden_dims):
         super(GSRM, self).__init__()
@@ -112,7 +105,7 @@ class GSRM(nn.Layer):
         self.num_decoder_TUs = num_decoder_tus
         self.hidden_dims = hidden_dims
 
-        self.fc0 = paddle.nn.Linear(
+        self.fc0 = nn.Linear(
             in_features=in_channels, out_features=self.char_num)
         self.wrap_encoder0 = WrapEncoder(
             src_vocab_size=self.char_num + 1,
@@ -146,29 +139,27 @@ class GSRM(nn.Layer):
             postprocess_cmd="da",
             weight_sharing=True)
 
-        self.mul = lambda x: paddle.matmul(x=x,
-                                           y=self.wrap_encoder0.prepare_decoder.emb0.weight,
-                                           transpose_y=True)
+        self.mul = lambda x: torch.matmul(x, self.wrap_encoder0.prepare_decoder.emb0.weight)
 
     def forward(self, inputs, gsrm_word_pos, gsrm_slf_attn_bias1,
                 gsrm_slf_attn_bias2):
         # ===== GSRM Visual-to-semantic embedding block =====
         b, t, c = inputs.shape
-        pvam_features = paddle.reshape(inputs, [-1, c])
+        pvam_features = inputs.reshape(-1, c)
         word_out = self.fc0(pvam_features)
-        word_ids = paddle.argmax(F.softmax(word_out), axis=1)
-        word_ids = paddle.reshape(x=word_ids, shape=[-1, t, 1])
+        word_ids = torch.argmax(F.softmax(word_out), dim=1)
+        word_ids = word_ids.reshape(-1, t, 1)
 
-        #===== GSRM Semantic reasoning block =====
+        # ===== GSRM Semantic reasoning block =====
         """
         This module is achieved through bi-transformers,
         ngram_feature1 is the froward one, ngram_fetaure2 is the backward one
         """
         pad_idx = self.char_num
 
-        word1 = paddle.cast(word_ids, "float32")
-        word1 = F.pad(word1, [1, 0], value=1.0 * pad_idx, data_format="NLC")
-        word1 = paddle.cast(word1, "int64")
+        word1 = word_ids.float()
+        word1 = F.pad(word1, [1, 0], value=1.0 * pad_idx)  # NLC
+        word1 = word1.long()
         word1 = word1[:, :-1, :]
         word2 = word_ids
 
@@ -178,48 +169,44 @@ class GSRM(nn.Layer):
         gsrm_feature1 = self.wrap_encoder0(enc_inputs_1)
         gsrm_feature2 = self.wrap_encoder1(enc_inputs_2)
 
-        gsrm_feature2 = F.pad(gsrm_feature2, [0, 1],
-                              value=0.,
-                              data_format="NLC")
+        gsrm_feature2 = F.pad(gsrm_feature2, [0, 1], value=0.)  # NLC
         gsrm_feature2 = gsrm_feature2[:, 1:, ]
         gsrm_features = gsrm_feature1 + gsrm_feature2
 
         gsrm_out = self.mul(gsrm_features)
 
         b, t, c = gsrm_out.shape
-        gsrm_out = paddle.reshape(gsrm_out, [-1, c])
+        gsrm_out = gsrm_out.reshape(-1, c)
 
         return gsrm_features, word_out, gsrm_out
 
 
-class VSFD(nn.Layer):
+class VSFD(nn.Module):
     def __init__(self, in_channels=512, pvam_ch=512, char_num=38):
         super(VSFD, self).__init__()
         self.char_num = char_num
-        self.fc0 = paddle.nn.Linear(
+        self.fc0 = nn.Linear(
             in_features=in_channels * 2, out_features=pvam_ch)
-        self.fc1 = paddle.nn.Linear(
+        self.fc1 = nn.Linear(
             in_features=pvam_ch, out_features=self.char_num)
 
     def forward(self, pvam_feature, gsrm_feature):
         b, t, c1 = pvam_feature.shape
         b, t, c2 = gsrm_feature.shape
-        combine_feature_ = paddle.concat([pvam_feature, gsrm_feature], axis=2)
-        img_comb_feature_ = paddle.reshape(
-            combine_feature_, shape=[-1, c1 + c2])
+        combine_feature_ = torch.concat([pvam_feature, gsrm_feature], dim=2)
+        img_comb_feature_ = combine_feature_.reshape(-1, c1 + c2)
         img_comb_feature_map = self.fc0(img_comb_feature_)
         img_comb_feature_map = F.sigmoid(img_comb_feature_map)
-        img_comb_feature_map = paddle.reshape(
-            img_comb_feature_map, shape=[-1, t, c1])
+        img_comb_feature_map = img_comb_feature_map.reshape(-1, t, c1)
         combine_feature = img_comb_feature_map * pvam_feature + (
-            1.0 - img_comb_feature_map) * gsrm_feature
-        img_comb_feature = paddle.reshape(combine_feature, shape=[-1, c1])
+                1.0 - img_comb_feature_map) * gsrm_feature
+        img_comb_feature = combine_feature.reshape(-1, c1)
 
         out = self.fc1(img_comb_feature)
         return out
 
 
-class SRNHead(nn.Layer):
+class SRNHead(nn.Module):
     def __init__(self, in_channels, out_channels, max_text_length, num_heads,
                  num_encoder_TUs, num_decoder_TUs, hidden_dims, **kwargs):
         super(SRNHead, self).__init__()
@@ -265,9 +252,9 @@ class SRNHead(nn.Layer):
 
         final_out = self.vsfd(pvam_feature, gsrm_feature)
         if not self.training:
-            final_out = F.softmax(final_out, axis=1)
+            final_out = F.softmax(final_out, dim=1)
 
-        _, decoded_out = paddle.topk(final_out, k=1)
+        _, decoded_out = torch.topk(final_out, k=1)
 
         predicts = OrderedDict([
             ('predict', final_out),
